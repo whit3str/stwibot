@@ -6,6 +6,7 @@ __pycache__/
 *.pyc
 *.log
 *.txt
+!requirements.txt
 steam_session.json
 keys_log.txt
 bot.log
