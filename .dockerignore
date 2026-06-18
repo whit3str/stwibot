@@ -1,0 +1,11 @@
+.venv/
+.env
+.git/
+.github/
+__pycache__/
+*.pyc
+*.log
+*.txt
+steam_session.json
+keys_log.txt
+bot.log

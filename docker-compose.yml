@@ -1,0 +1,28 @@
+services:
+  stwibot:
+    image: ghcr.io/whit3str/stwibot:latest
+    container_name: stwibot
+    restart: unless-stopped
+
+    # Les variables d'environnement sont lues depuis le fichier .env
+    # (à placer à côté de ce docker-compose.yml sur le serveur Portainer)
+    env_file:
+      - .env
+
+    # Fichiers persistants : session Steam, logs
+    volumes:
+      - bot-data:/data
+
+    # Nécessaire pour la saisie interactive du code Steam Guard
+    # (premier lancement uniquement — voir README ci-dessous)
+    stdin_open: true
+    tty: true
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:

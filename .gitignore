@@ -1,0 +1,6 @@
+.venv/
+.env
+steam_session.json
+keys_log.txt
+*.log
+__pycache__/
