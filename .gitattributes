@@ -1,0 +1,5 @@
+# Force LF pour tous les fichiers shell (exécutés sur Linux dans le conteneur)
+*.sh text eol=lf
+
+# Force LF pour les Dockerfiles
+Dockerfile text eol=lf
