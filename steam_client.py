@@ -46,6 +46,10 @@ class SteamClient:
     def __init__(self, config: Config) -> None:
         self.config = config
         self._client: Optional[_SteamClient] = None
+        # Jeton de rafraîchissement Steam (JWT « nonce », valide ~200 jours).
+        # Permet de régénérer une session web sans redemander le code Steam Guard.
+        self._refresh_token: str = ""
+        self._steamid: str = ""
         # Sérialise les activations (appelées depuis des threads asyncio) et
         # applique un throttling pour rester sous les limites de Steam.
         self._activate_lock = threading.Lock()
@@ -65,6 +69,8 @@ class SteamClient:
         data = {
             "cookies": cookies,
             "steam_guard": self._client.steam_guard,
+            "refresh_token": self._refresh_token,
+            "steamid": self._steamid or self._client.steam_guard.get("steamid", ""),
         }
         with open(SESSION_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2)
@@ -89,20 +95,108 @@ class SteamClient:
 
         self._client.steam_guard = data.get("steam_guard", {})
         self._client.was_login_executed = True
+        self._refresh_token = data.get("refresh_token", "")
+        self._steamid = data.get("steamid", "") or self._client.steam_guard.get("steamid", "")
 
-        # Vérification rapide : appel léger à steamcommunity.com
+        # Vérification rapide : les cookies sont-ils encore valides ?
+        if self._session_is_valid():
+            logger.info("Session Steam restaurée depuis %s", SESSION_FILE)
+            self._restore_access_token()
+            return True
+
+        # Cookies expirés → tentative de rafraîchissement silencieux via le
+        # refresh_token (aucun code Steam Guard requis).
+        if self._refresh_token:
+            logger.info("Cookies expirés — tentative de rafraîchissement via le refresh_token…")
+            try:
+                if self._refresh_web_session() and self._session_is_valid():
+                    logger.info("Session rafraîchie automatiquement (sans code Steam Guard).")
+                    self._restore_access_token()
+                    self._save_session()
+                    return True
+            except requests.RequestException as exc:
+                logger.warning("Échec réseau lors du rafraîchissement automatique : %s", exc)
+            except Exception as exc:  # noqa: BLE001 - on retombe sur le login manuel
+                logger.warning("Rafraîchissement automatique impossible : %s", exc)
+
+        logger.info("Session expirée, re-authentification requise.")
+        return False
+
+    # ------------------------------------------------------------------
+    # Helpers de session
+    # ------------------------------------------------------------------
+
+    def _session_is_valid(self) -> bool:
+        """Vérifie que la session web est active (pas de redirection vers /login)."""
         try:
-            r = session.get("https://steamcommunity.com/my/", allow_redirects=False, timeout=10)
-            # Si on est redirigé vers /login → session expirée
+            r = self._client._session.get(
+                "https://steamcommunity.com/my/", allow_redirects=False, timeout=10
+            )
             location = r.headers.get("Location", "")
             if r.status_code in (301, 302) and "login" in location:
-                logger.info("Session expirée, re-authentification requise.")
                 return False
-            logger.info("Session Steam restaurée depuis %s", SESSION_FILE)
             return True
         except requests.RequestException as exc:
             logger.warning("Impossible de vérifier la session : %s", exc)
             return False
+
+    def _restore_access_token(self) -> None:
+        """Récupère l'access_token interne de steampy (best effort)."""
+        try:
+            self._client._access_token = self._client._set_access_token()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Impossible de récupérer l'access_token steampy : %s", exc)
+
+    def _finalize_web_login(self, refresh_token: str, steamid: str) -> bool:
+        """Échange un refresh_token contre des cookies web (steamLoginSecure).
+
+        Réutilisé à la fois par le login manuel et par le rafraîchissement
+        automatique. Retourne True si les cookies ont bien été posés.
+        """
+        session = self._client._session
+        COMMUNITY = "https://steamcommunity.com"
+        STORE     = "https://store.steampowered.com"
+        LOGIN     = "https://login.steampowered.com"
+
+        # Cookie sessionid frais (sert de jeton CSRF pour finalizelogin)
+        session.get(f"{STORE}/login/", headers={"Referer": STORE})
+        sessionid = session.cookies.get("sessionid", "")
+
+        r = session.post(
+            f"{LOGIN}/jwt/finalizelogin",
+            data={
+                "nonce":     refresh_token,
+                "sessionid": sessionid,
+                "redir":     f"{COMMUNITY}/login/home/?goto=",
+            },
+            headers={"Referer": f"{STORE}/login/", "Origin": STORE},
+        )
+        logger.debug("finalizelogin → HTTP %d : %r", r.status_code, r.text[:300] if r.text else "(vide)")
+
+        if r.status_code == HTTPStatus.FORBIDDEN:
+            raise Exception(
+                "Steam a bloqué la connexion depuis cette machine (HTTP 403).\n"
+                "Connectez-vous UNE FOIS manuellement via le client Steam Desktop ou "
+                "le site store.steampowered.com depuis ce PC, puis relancez le bot."
+            )
+        if not r.ok or not r.text:
+            return False
+
+        rdata = r.json()
+        transfer = rdata.get("transfer_info", [])
+        if not transfer:
+            # refresh_token expiré ou invalide
+            return False
+        for item in transfer:
+            p = {**item["params"], "steamID": rdata.get("steamID", steamid)}
+            session.post(item["url"], data=p)
+        return True
+
+    def _refresh_web_session(self) -> bool:
+        """Régénère une session web à partir du refresh_token stocké."""
+        if not self._refresh_token or not self._steamid:
+            return False
+        return self._finalize_web_login(self._refresh_token, self._steamid)
 
     # ------------------------------------------------------------------
     # Authentification
@@ -242,34 +336,13 @@ class SteamClient:
                 "Le code Steam Guard était peut-être incorrect ou expiré — relancez et réessayez."
             )
 
-        # 8. Finalisation de la session JWT
-        #    Origin = store.steampowered.com (requis par l'endpoint finalizelogin)
-        sessionid = session.cookies.get("sessionid", "")
-        r = session.post(
-            f"{LOGIN}/jwt/finalizelogin",
-            data={
-                "nonce":     refresh_token,
-                "sessionid": sessionid,
-                "redir":     f"{COMMUNITY}/login/home/?goto=",
-            },
-            headers={"Referer": f"{STORE}/login/", "Origin": STORE},
-        )
-        logger.debug("finalizelogin → HTTP %d : %r", r.status_code, r.text[:300] if r.text else "(vide)")
-
-        if r.status_code == HTTPStatus.FORBIDDEN:
-            raise Exception(
-                "Steam a bloqué la connexion depuis cette machine (HTTP 403).\n"
-                "Connectez-vous UNE FOIS manuellement via le client Steam Desktop ou "
-                "le site store.steampowered.com depuis ce PC, puis relancez le bot."
-            )
-        if not r.ok or not r.text:
-            raise Exception(f"finalizelogin a échoué (HTTP {r.status_code})")
-
-        # 9. Suivi des redirections de transfert de session
-        rdata = r.json()
-        for item in rdata.get("transfer_info", []):
-            p = {**item["params"], "steamID": rdata.get("steamID", steamid)}
-            session.post(item["url"], data=p)
+        # 8-9. Finalisation de la session JWT + transfert des cookies.
+        #      On conserve le refresh_token pour pouvoir rafraîchir la session
+        #      automatiquement plus tard, sans redemander de code Steam Guard.
+        self._refresh_token = refresh_token
+        self._steamid       = str(steamid)
+        if not self._finalize_web_login(refresh_token, steamid):
+            raise Exception("finalizelogin a échoué : aucun cookie de session reçu")
 
         # 10. Mise à jour de l'état interne du client steampy
         self._client.was_login_executed = True
