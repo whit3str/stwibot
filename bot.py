@@ -25,7 +25,7 @@ class TwitchSteamBot(commands.Bot):
         super().__init__(
             token=config.twitch_token,
             prefix="!",
-            initial_channels=[config.twitch_channel],
+            initial_channels=config.twitch_channels,
         )
         self.config = config
         self.steam = steam
@@ -41,8 +41,8 @@ class TwitchSteamBot(commands.Bot):
     async def event_ready(self) -> None:
         logger.info("Bot connecté en tant que %s", self.nick)
         logger.info(
-            "Surveillance du canal : #%s | Utilisateurs filtrés : %s",
-            self.config.twitch_channel,
+            "Surveillance des canaux : %s | Utilisateurs filtrés : %s",
+            ", ".join(f"#{c}" for c in self.config.twitch_channels),
             self.config.allowed_users if self.config.allowed_users else "tous",
         )
 

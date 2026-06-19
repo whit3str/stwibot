@@ -7,8 +7,15 @@ load_dotenv()
 class Config:
     # Twitch
     twitch_token: str = os.environ["TWITCH_TOKEN"]
-    twitch_channel: str = os.getenv("TWITCH_CHANNEL", "mistermv")
     twitch_bot_nick: str = os.environ["TWITCH_BOT_NICK"]
+
+    # Liste des chaînes à surveiller.
+    # Priorité à TWITCH_CHANNELS (séparées par des virgules) ; à défaut,
+    # rétro-compat avec TWITCH_CHANNEL (chaîne unique). Défaut : mistermv.
+    _channels_raw: str = os.getenv("TWITCH_CHANNELS", "") or os.getenv("TWITCH_CHANNEL", "")
+    twitch_channels: list[str] = [
+        c.strip().lower() for c in _channels_raw.split(",") if c.strip()
+    ] or ["mistermv"]
 
     _allowed_raw: str = os.getenv("TWITCH_ALLOWED_USERS", "")
     allowed_users: set[str] = (
