@@ -412,10 +412,20 @@ class SteamClient:
         purchase_detail: int = data.get("purchase_result_details", -1)
 
         if success == 1 and purchase_detail == 0:
-            # Extraction du nom du jeu depuis le reçu
+            # Extraction du nom du jeu depuis le reçu.
+            # Steam renvoie le titre dans « line_item_description » ; on garde
+            # « package_description » en repli pour les anciennes réponses.
             receipt = data.get("purchase_receipt_info", {})
-            items = receipt.get("line_items", [{}])
-            game_name: str = items[0].get("package_description", "Jeu inconnu") if items else "Jeu inconnu"
+            logger.debug("Reçu d'activation brut pour %s : %r", key, receipt)
+            items = receipt.get("line_items") or []
+            game_name = "Jeu inconnu"
+            if items:
+                first = items[0]
+                game_name = (
+                    first.get("line_item_description")
+                    or first.get("package_description")
+                    or "Jeu inconnu"
+                )
             logger.info("[SUCCÈS] %s → %s", key, game_name)
             self._log(key, "SUCCÈS", game_name)
             self._notify_discord(key, game_name)

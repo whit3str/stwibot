@@ -9,6 +9,7 @@ Usage :
 
 import asyncio
 import logging
+import os
 import sys
 
 from config import Config
@@ -16,15 +17,16 @@ from steam_client import SteamClient
 from bot import TwitchSteamBot
 
 # ── Configuration du logging ────────────────────────────────────────────────
+# Niveau réglable via la variable d'environnement LOG_LEVEL (INFO par défaut).
+# Mettre LOG_LEVEL=DEBUG pour voir le reçu d'activation Steam brut.
+_log_level = getattr(logging, os.environ.get("LOG_LEVEL", "INFO").upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_log_level,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(
-            __import__("os").path.join(
-                __import__("os").environ.get("DATA_DIR", "."), "bot.log"
-            ),
+            os.path.join(os.environ.get("DATA_DIR", "."), "bot.log"),
             encoding="utf-8",
         ),
     ],
